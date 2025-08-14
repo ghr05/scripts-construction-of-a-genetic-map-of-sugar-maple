@@ -1,0 +1,404 @@
+
+######with assistance from Bautisse Didier Postaire
+#########cluster
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+
+donnees <- read_excel("Résultat full-sib colony.xlsx", sheet = "Feuil1")
+fratries <- as.data.frame(table(donnees$clusterindex))
+colnames(fratries) <- c("Cluster", "NombreIndividus")
+
+fratries_filtrees <- fratries %>%
+  filter(NombreIndividus > 1) %>%
+  arrange(desc(NombreIndividus))
+
+fratries_filtrees$Cluster <- factor(fratries_filtrees$Cluster, levels = fratries_filtrees$Cluster)
+ 
+ggplot(fratries_filtrees, aes(x = Cluster, y = NombreIndividus)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(
+    title = "Nombre d'individus par fratrie (clusters)",
+    x = "Fratrie (Cluster)",
+    y = "Nombre d'individus"
+  ) +
+  scale_y_continuous(breaks = seq(0, 160, by = 20)) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    axis.ticks.x = element_blank(),
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank()   
+  )
+
+#################################
+#Distribution of SNP density on each chromosome
+install.packages("CMplot")
+library('CMplot')
+data <- read.csv("SNP,chr,POS_vcf-stacks3.csv", sep = ";")
+colnames(data)
+
+CMplot::CMplot(data,
+               plot.type = "d",
+               bin.size = 1e6,
+               chr.den.col = c("darkgreen", "yellow", "red"),
+               file = "jpg",
+               file.name = "plot_density-final",
+               dpi = 300,
+               main = "Répartition de la densité des SNP sur chaque Scaffold",
+               file.output = TRUE,
+               verbose = TRUE,
+               width = 9,
+               height = 6)
+#####
+
+###add parents' genotypes to the vcf file (by Bautisse Didier Postaire)
+library(vcfR)
+library(ape)
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+library(plyr)
+library(tibble)
+
+list.filenames<-list.files(pattern=".vcf$")
+list.data<-list()
+for (i in 1:length(list.filenames))
+{
+  list.data[[i]]<-read.vcfR(list.filenames[i])
+}## importe tous les fichiers finissant par vcf et les stocker dans une liste
+names(list.data)<-list.filenames
+
+fix <- list.data[["stacks3.random_snps.maf005.GQ20.DP10-500.miss30.ri.missindv50.removeSNP.recode.vcf"]]@fix; fix <- as.data.frame(fix)
+
+parents <- read.table("génotype-parents-stacks.txt",sep = "\t", h=T)
+
+test <- cbind(fix,parents)
+
+test<-test[,c(1:8,11:14)]
+
+for (i in 9:ncol(test)){
+  test[,i]<-ifelse(test[,i] == test$REF,0,1)
+  }
+
+parents_vcf <- matrix(nrow =(nrow(test)),ncol=2);colnames(parents_vcf)<-c("father","mother")
+
+parents_vcf[,1] <- as.character(paste(test$fatherID,"/",test$fatherID.1,":.:.:.:.",sep="")) 
+parents_vcf[,2] <- as.character(paste(test$MotherID,"/",test$MotherID.1,":.:.:.:.",sep=""))
+
+ gt <- list.data[[1]]@gt
+
+gt1<- cbind(gt,parents_vcf)
+ 
+list.data[[1]]@gt <- gt1
+ write.vcf(list.data[[1]],file="test_add_geno_parents.vcf.gz")
+
+library(onemap)
+a<-onemap_read_vcfR("test_add_geno_parents.vcf",parent1 = "father",parent2 = "mother", cross = "outcross")
+
+#####
+
+############construction of the genetic map (onemapR)
+library(onemap)
+##Importing data from a VCF file
+vcf_outcrossingpop_ERS_2<- onemap_read_vcfR("test_add_geno_parents.vcf" ,parent1= "father" ,parent2= "mother", cross = "outcross" )
+vcf_outcrossingpop_ERS_2
+
+###
+
+plot(vcf_outcrossingpop_ERS_2)
+write_onemap_raw(vcf_outcrossingpop_ERS_2, file.name = "vcf_outcrossingpop_ERS_2.raw")                     
+
+##Filter onemap object by missing data
+vcf_filtered_outcrossingpop_ERS_2 <- filter_missing(vcf_outcrossingpop_ERS_2, threshold = 0.25)
+
+##Graphical view of genotypes and allele depths
+
+create_depths_profile(onemap.obj = vcf_outcrossingpop_ERS_2,
+                      vcf = "test_add_geno_parents.vcf", 
+                      parent1 = "father", 
+                      parent2 = "mother", 
+                      vcf.par = "AD", 
+                      recovering = FALSE, 
+                      mks = NULL, 
+                      inds = NULL, 
+                      GTfrom = "vcf", 
+                      alpha = 0.1,
+                      rds.file = "depths_out.rds")
+
+##Find redundant markers
+
+bins <- find_bins(vcf_filtered_outcrossingpop_ERS_2, exact = FALSE)
+bins
+bins_filtered_outcrossingpop_ERS_2 <- create_data_bins(vcf_filtered_outcrossingpop_ERS_2, bins)
+bins_filtered_outcrossingpop_ERS_2
+
+##see the markers graphically
+
+plot(bins_filtered_outcrossingpop_ERS_2, all = FALSE)
+plot_by_segreg_type(bins_filtered_outcrossingpop_ERS_2)
+
+##Exporting a .raw file from a onemap object
+write_onemap_raw(bins_filtered_outcrossingpop_ERS_2, file.name = "bins_filtered_outcrossingpop_ERS_2.raw")
+
+##Testing the segregation model
+
+segregation_bins_filtered_ERS_2 <- test_segregation(bins_filtered_outcrossingpop_ERS_2)
+plot(segregation_bins_filtered_ERS_2)
+
+
+select_segreg(segregation_bins_filtered_ERS_2, distorted = TRUE) #to show the markers names with segregation distortion
+select_segreg(segregation_bins_filtered_ERS_2, distorted = FALSE) #to show the markers names without segregation distortion
+distortion_segregation_bins_filtered_ERS_2 <- select_segreg(segregation_bins_filtered_ERS_2, distorted = TRUE, numbers = TRUE) #to show the markers numbers with segregation distortion
+distortion_segregation_bins_filtered_ERS_2
+no_distortion_segregation_bins_filtered_ERS_2 <- select_segreg(segregation_bins_filtered_ERS_2, distorted = FALSE, numbers = TRUE) #to show the markers numbers without segregation distortion
+no_distortion_segregation_bins_filtered_ERS_2
+
+
+#recombination fraction estimation
+LOD_bins_filtered_outcrossingpop_ERS_2 <- suggest_lod(bins_filtered_outcrossingpop_ERS_2)
+twopt_bins_filtered_outcrossingpop_ERS_2 <- rf_2pts(bins_filtered_outcrossingpop_ERS_2, LOD=LOD_bins_filtered_outcrossingpop_ERS_2, max.rf=0.4)
+twopt_bins_filtered_outcrossingpop_ERS_2
+
+#subtract the undistorted marks from the tweets file, with the results of the segregation test (select_segrer and test_segreg)
+
+
+mark_no_distortion_segregation_twopt_bins_filtered_ERS_2 <- make_seq(twopt_bins_filtered_outcrossingpop_ERS_2, c(no_distortion_segregation_bins_filtered_ERS_2)) #prendre seulement les mark sans distortion 
+marker_type(mark_no_distortion_segregation_twopt_bins_filtered_ERS_2) #afficher tableau
+
+
+B37_no_dist_2 <-  mark_no_distortion_segregation_twopt_bins_filtered_ERS_2$data.name[["segr.type"]] == "B3.7" #identifie quelle linge du tableau sans distorsion, c'est à dire quel marquer, coreespond au modele de segreg X.X
+vecteur_b37_no_dist_2 <- which(B37_no_dist_2,TRUE) # converti le vecteur logique precedent en numero de ligne du tableau, c'est à dire en numero de marqueur
+
+
+mark_no_distortion_b37_2 <- make_seq(twopt_bins_filtered_outcrossingpop_ERS_2, vecteur_b37_no_dist_2) # creer fichier sequence avec juste les marqueur sans distorsion du type de segreg X.X, grace au vecteur precedent à partir du ficheir de test de segregation contenant tous les marqueurs (*avec et sans disotrsion) 
+mark_no_distortion_b37_2
+
+##Assigning markers to linkage groups
+# Using recombination information to map marks
+
+LOD_sug_nodistb37_2 <- suggest_lod(mark_no_distortion_b37_2)
+LOD_sug_nodistb37_2
+LGs_upgma_nodistb37_2 <- group_upgma(mark_no_distortion_b37_2, expected.groups = 13, inter = F)
+plot(LGs_upgma_nodistb37_2)
+LGs_upgma_nodistb37_2
+set_map_fun(type = "kosambi")
+
+
+
+# Boucle sur les 13 groupes de liaison avec la fonction rcd
+for (i in 1:13) {
+  # Créer la séquence pour le groupe i
+  lg_seq <- make_seq(LGs_upgma_nodistb37_2, i)
+  
+  # Appliquer l'ordonnancement avec estimation des distances (hmm = TRUE)
+  lg_rcd <- rcd(lg_seq, hmm = TRUE)
+  
+  # Nom dynamique des objets pour sauvegarde (facultatif mais pratique)
+  assign(paste0("GL3_", i), lg_seq)
+  assign(paste0("GL3_", i, "_rcd"), lg_rcd)
+  
+  # Générer le graphique HTML pour visualiser la qualité de l'ordre
+  rf_graph_table(
+    lg_rcd,
+    inter = TRUE,
+    mrk.axis = "numbers",
+    html.file = paste0("GL3_", i, "_rcd.html")
+  )
+}
+
+
+
+##example for GL2
+
+##
+GL3_2_rcd
+rf_graph_table(GL3_2_rcd, inter = TRUE, mrk.axis = "numbers", html.file = "GL3_2_rcd.html")
+
+GL2_order <- order_seq(GL3_2_rcd, n.init = 5, THRES = LOD_sug_nodistb37_2, touchdown = TRUE)
+GL2_optimized <- make_seq(GL2_order, "force")
+GL2_rcd_order <- map(GL2_optimized)
+rf_graph_table(GL2_rcd_order, inter = TRUE, mrk.axis = "numbers", html.file = "GL2_rcd_order.html")
+##
+#GL2_modif
+GL2_modif_drop <- drop_marker(GL2_rcd_order, c(78, 180, 282, 283, 284, 285, 286, 287, 288, 289, 290, 293, 295, 297, 298, 299, 301, 303, 305, 308, 309, 310, 311, 312, 313, 315, 317, 318, 319, 322, 324, 325, 326, 327, 328, 330, 332, 333, 334, 335, 336, 337, 338, 340, 341, 343, 345, 346, 347, 348, 349, 351, 353, 354, 355, 356, 357, 358, 359, 360, 366, 369, 371, 372, 374, 375, 376, 377, 378, 379, 380, 381, 382, 383, 385, 386, 387, 388, 389, 390, 392, 393, 397, 399, 400, 402, 403, 404, 405, 406, 407, 408, 409, 410, 413, 417, 418, 419, 420, 421, 423, 424, 426, 429, 430, 432, 435, 436, 440, 441, 442, 444, 445, 447, 448, 449, 453, 454, 455, 459, 461, 463, 465, 471, 473, 474, 475, 476, 478, 480, 481, 483, 484, 488, 492, 493, 494, 496, 501, 504, 505, 507, 508, 519, 730, 731, 735, 1500, 1618))
+GL2_modif_test_map <- onemap::map(GL2_modif_drop)
+
+# GL2_modif Set the order of markers to reposition
+
+GL2_modif_markers_to_reposition <- c(326, 284, 288, 308, 289, 295, 293, 282, 287, 298, 285, 346, 392, 351, 325, 315, 301, 322, 324, 333, 376, 385, 378, 375, 393, 355, 340, 335, 328, 297, 299, 311, 327, 336, 358, 334, 305, 283, 286, 303, 290, 369, 312, 317, 319, 318, 337, 330, 332, 338, 341, 359, 313, 345, 349, 360, 343, 347, 348, 353, 354, 356, 357, 366, 374, 371, 377, 372, 380, 381, 382, 383, 386, 387, 388, 389, 390, 399, 413, 420, 475, 421, 474, 447, 419, 309, 459, 432, 435, 418, 404, 405, 440, 429, 476, 455, 465, 461, 471, 463, 478, 484, 494, 406, 408, 409, 402, 410, 407, 403, 397, 442, 473, 453, 444, 445, 379, 436, 430, 423, 310, 424, 448, 449, 441, 417, 400, 426, 454, 505, 480, 483, 488, 501, 507, 496, 492, 493, 508, 504, 481)
+# Définir les nouvelles positions correspondantes
+GL2_modif_new_positions <- 1:141
+
+# Initialiser GL2_modif_test_map
+# GL2_modif_test_map <- ... #carte initiale
+
+# Boucle pour repositionner les marqueurs
+for (i in 1:length(GL2_modif_markers_to_reposition)) {
+  GL2_modif_extend <- try_seq(GL2_modif_test_map, GL2_modif_markers_to_reposition[i])
+  GL2_modif_test_map <- make_seq(GL2_modif_extend, GL2_modif_new_positions[i])
+}
+
+# Définir le nouvel ordre final
+newOrdGL2_modif <- c(326, 284, 288, 308, 289, 295, 293, 282, 287, 298, 285, 346, 392, 351, 325, 315, 301, 322, 324, 333, 376, 385, 378, 375, 393, 355, 340, 335, 328, 297, 299, 311, 327, 336, 358, 334, 305, 283, 286, 303, 290, 369, 312, 317, 319, 318, 337, 330, 332, 338, 341, 359, 313, 345, 349, 360, 343, 347, 348, 353, 354, 356, 357, 366, 374, 371, 377, 372, 380, 381, 382, 383, 386, 387, 388, 389, 390, 399, 413, 420, 475, 421, 474, 447, 419, 309, 459, 432, 435, 418, 404, 405, 440, 429, 476, 455, 465, 461, 471, 463, 478, 484, 494, 406, 408, 409, 402, 410, 407, 403, 397, 442, 473, 453, 444, 445, 379, 436, 430, 423, 310, 424, 448, 449, 441, 417, 400, 426, 454, 505, 480, 483, 488, 501, 507, 496, 492, 493, 508, 504, 481)
+# Créer la carte finale
+GL2_modif_final <- make_seq(GL2_modif_extend, length(newOrdGL2_modif))
+mapGL2_modif <- map (GL2_modif_final) 
+rf_graph_table(mapGL2_modif, inter = TRUE, mrk.axis = "numbers", html.file = "GL2_modif.html")
+
+#GL2_modif2
+GL2_modif2_drop <- drop_marker(mapGL2_modif, c(282, 284, 287, 298, 301, 285, 322, 324, 333, 289, 288, 299, 326, 283, 286, 303, 290, 297, 311, 327, 336, 358, 357, 343, 347, 348, 353, 354, 356, 338, 330, 332, 308, 328, 335, 340, 355, 295, 293, 305, 346, 392, 351, 325, 315, 376, 385, 378, 375, 393, 334, 360, 369, 312, 317, 319, 318, 337, 359, 313, 345, 349, 366, 374, 397, 371, 377, 381, 383, 387, 389, 390, 406, 408, 409, 402, 410, 407, 403, 423, 310, 424, 448, 449, 426, 454, 442, 473, 453, 444, 445, 436, 430, 372, 379, 382, 380, 386, 441, 417, 400, 388, 399, 413, 420, 475, 421, 474, 447, 419, 309, 459, 432, 435, 418, 404, 405, 440, 429, 476, 455, 465, 461, 467, 471, 463, 478, 484, 494, 505, 480, 483, 488, 501, 507, 496, 492, 493, 508, 504, 341))
+
+GL2_modif2_test_map <- onemap::map(GL2_modif2_drop)
+
+# GL2_modif2 Définir l'ordre des marqueurs à repositionner
+
+GL2_modif2_markers_to_reposition <- c(282, 284, 287, 298, 301, 285, 322, 324, 333, 289, 288, 299, 326, 283, 286, 303, 290, 297, 311, 327, 336, 358, 357, 343, 347, 348, 353, 354, 356, 338, 330, 332, 308, 328, 335, 340, 355, 295, 293, 305, 346, 392, 351, 325, 315, 376, 385, 378, 375, 393, 334, 360, 369, 312, 317, 319, 318, 337, 359, 313, 345, 349, 366, 374, 397, 371, 377, 381, 383, 387, 389, 390, 406, 408, 409, 402, 410, 407, 403, 423, 310, 424, 448, 449, 426, 454, 442, 473, 453, 444, 445, 436, 430, 372, 379, 382, 380, 386, 441, 417, 400, 388, 399, 413, 420, 475, 421, 474, 447, 419, 309, 459, 432, 435, 418, 404, 405, 440, 429, 476, 455, 465, 461, 467, 471, 463, 478, 484, 494, 505, 480, 483, 488, 501, 507, 496, 492, 493, 508, 504)
+# Définir les nouvelles positions correspondantes
+GL2_modif2_new_positions <- 1:140
+
+# Initialiser GL2_modif2_test_map
+# GL2_modif2_test_map <- ... #carte initiale
+
+# Boucle pour repositionner les marqueurs
+for (i in 1:length(GL2_modif2_markers_to_reposition)) {
+  GL2_modif2_extend <- try_seq(GL2_modif2_test_map, GL2_modif2_markers_to_reposition[i])
+  GL2_modif2_test_map <- make_seq(GL2_modif2_extend, GL2_modif2_new_positions[i])
+}
+
+# Définir le nouvel ordre final
+newOrdGL2_modif2 <- c(282, 284, 287, 298, 301, 285, 322, 324, 333, 289, 288, 299, 326, 283, 286, 303, 290, 297, 311, 327, 336, 358, 357, 343, 347, 348, 353, 354, 356, 338, 330, 332, 308, 328, 335, 340, 355, 295, 293, 305, 346, 392, 351, 325, 315, 376, 385, 378, 375, 393, 334, 360, 369, 312, 317, 319, 318, 337, 359, 313, 345, 349, 366, 374, 397, 371, 377, 381, 383, 387, 389, 390, 406, 408, 409, 402, 410, 407, 403, 423, 310, 424, 448, 449, 426, 454, 442, 473, 453, 444, 445, 436, 430, 372, 379, 382, 380, 386, 441, 417, 400, 388, 399, 413, 420, 475, 421, 474, 447, 419, 309, 459, 432, 435, 418, 404, 405, 440, 429, 476, 455, 465, 461, 467, 471, 463, 478, 484, 494, 505, 480, 483, 488, 501, 507, 496, 492, 493, 508, 504)
+# Créer la carte finale
+GL2_modif2_final <- make_seq(GL2_modif2_extend, length(newOrdGL2_modif2))
+mapGL2_modif2 <- map (GL2_modif2_final) 
+rf_graph_table(mapGL2_modif2, inter = TRUE, mrk.axis = "numbers", html.file = "GL2_modif2.html")
+
+
+##
+
+draw_map2(mapGL1_modif, mapGL2_modif3, mapGL3_modif2, mapGL4_modif2, mapGL5_modif2,
+          mapGL6_modif2, mapGL7_modif3, mapGL8_modif, mapGL9_modif, mapGL10_modif,
+          mapGL11_modif, mapGL12_modif, mapGL13_modif,
+          main = "Carte Génétique de l'Érable à Sucre", 
+          group.names = c("LG1", "LG2", "LG3", "LG4", "LG5", "LG6", "LG7", 
+                          "LG8", "LG9", "LG10", "LG11", "LG12", "LG13"),
+          output = "mapLG_orderseq-rcd5.pdf",
+          col.mark= "#335C81")
+####
+##synteny
+
+library(readxl)
+library(ggplot2)
+library(gridExtra)
+library(readxl)
+library(dplyr)
+
+
+df <- read_excel("synténie_rcd_order-final.xlsx", sheet = "synténie")
+
+pairs <- unique(df[, c("LG", "Chr")])
+
+plots <- list()
+
+for (i in 1:nrow(pairs)) {
+  lg_i <- pairs$LG[i]
+  chr_i <- pairs$Chr[i]
+  
+  sub_df <- df %>%
+    filter(LG == lg_i & Chr == chr_i) %>%
+    mutate(
+      genetic_cM = as.numeric(genetic_cM),
+      physical_bp = as.numeric(physical_bp),
+      genetic_cM_norm = (genetic_cM - min(genetic_cM, na.rm = TRUE)) /
+        (max(genetic_cM, na.rm = TRUE) - min(genetic_cM, na.rm = TRUE)),
+      physical_bp_norm = (physical_bp - min(physical_bp, na.rm = TRUE)) /
+        (max(physical_bp, na.rm = TRUE) - min(physical_bp, na.rm = TRUE))
+    )
+  
+  p <- ggplot(sub_df) +
+    geom_segment(aes(x = 0, xend = 1,
+                     y = genetic_cM_norm, yend = physical_bp_norm),
+                 color = "steelblue", alpha = 0.6, linewidth = 0.6) +
+    scale_x_continuous(breaks = c(0, 1),
+                       labels = c("LG", "Scaffold"),
+                       limits = c(-0.05, 1.05)) +
+    scale_y_continuous(breaks = seq(0, 1, 0.2),
+                       limits = c(0, 1)) +
+    labs(title = paste0(lg_i, " ↔ ", chr_i)) +
+    theme_minimal(base_size = 9) +
+    theme(
+      plot.background = element_blank(),
+      panel.background = element_blank(),
+      panel.grid = element_blank(),  
+      axis.line = element_line(color = "black", linewidth = 0.3),
+      axis.ticks = element_line(color = "black", linewidth = 0.3),
+      axis.text = element_text(size = 7),
+      plot.title = element_text(size = 10, face = "bold", hjust = 0.5),
+      axis.title = element_blank()
+    )
+  
+  plots[[length(plots) + 1]] <- p
+}
+
+
+
+#############################
+###correlation
+library(readxl)
+library(vegan)
+library(dplyr)
+library(ggplot2)
+
+df <- read_excel("synténie_rcd_order-final.xlsx", sheet = "corrélation")
+colnames(df) <- c("linkage_group", "marker_id", "physical_pos_bp", "genetic_pos_cM")
+
+df$genetic_pos_cM <- as.numeric(df$genetic_pos_cM)
+df$physical_pos_bp <- as.numeric(df$physical_pos_bp)
+df$linkage_group <- factor(df$linkage_group, levels = paste0("GL", 1:13), ordered = TRUE)
+
+mantel_results <- df %>%
+  group_by(linkage_group) %>%
+  summarise(
+    r = {
+      d1 <- dist(physical_pos_bp)
+      d2 <- dist(genetic_pos_cM)
+      m <- mantel(d1, d2, method = "spearman", permutations = 9999)
+      m$statistic
+    },
+    r2 = r^2,
+    xpos = max(physical_pos_bp, na.rm = TRUE),
+   
+    ypos = max(genetic_pos_cM, na.rm = TRUE) + 0.05 * max(genetic_pos_cM, na.rm = TRUE),
+    label = paste0("r = ", round(r, 3), "\nR² = ", round(r2, 3)),
+    .groups = "drop"
+  )
+
+ggplot(df, aes(x = physical_pos_bp, y = genetic_pos_cM)) +
+  geom_point(alpha = 0.6, color = "#0072B2", size = 1.3) +
+  geom_smooth(method = "lm", se = FALSE, color = "#0072B2", linewidth = 1) +
+  geom_text(
+    data = mantel_results,
+    aes(x = xpos, y = ypos, label = label),
+    inherit.aes = FALSE,
+    hjust = 1.1, vjust = 1.1,
+    size = 4, fontface = "bold", color = "black"
+  ) +
+  facet_wrap(~ linkage_group, scales = "free_x") +
+  labs(
+    title = "Corrélation entre la carte génétique et la carte physique",
+    x = "Position physique (pb)",
+    y = "Position génétique (cM)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = "#f7f7f7", color = NA),
+    strip.text = element_text(face = "bold", size = 11),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    axis.title = element_text(face = "bold")
+  )
+
+###################
