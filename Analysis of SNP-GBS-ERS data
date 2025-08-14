@@ -1,0 +1,100 @@
+###  with assistance from Alix Pugeaut
+#demultiplexage 
+
+sabre pe -c -m 1 -f /home/rania/GBS-carto/reads/NS.X0084.007.D702---B504.Groba_P2_R1.fastq.gz -r /home/rania/GBS-carto/reads/NS.X0084.007.D702---B504.Groba_P2_R2.fastq.gz -b dmux_plate2.txt -u /home/rania/GBS-carto/dmux2_plate/plate2_R1.fq -w /home/rania/GBS-carto/dmux2_plate/plate2_R2.fq >> dmux_pass.log2
+
+#Compress output files
+
+gzip /home/rania/GBS-carto/dmux/*.fq
+gzip /home/rania/GBS-carto/dmux_plate/*.fq
+
+#quality verification: 
+
+for i in *fq.gz; do fastqc $i; done
+
+
+#QUALITY CONTROL ET ALIGNEMENT:
+for f in /home/rania/GBS-carto/dmux/*R1.fq.gz; do
+    sample=`basename $f _R1.fq.gz`
+    echo "Trimming $sample"
+    fastp -i /home/rania/GBS-carto/dmux/${sample}_R1.fq.gz -I /home/rania/GBS-carto/dmux/${sample}_R2.fq.gz \
+          -o /home/rania/GBS-carto/trimmed2/${sample}_trimmed_R1.fq.gz \
+          -O /home/rania/GBS-carto/trimmed2/${sample}_trimmed_R2.fq.gz \
+          -w 16 -p -c -l 20 -M 30 -r --adapter_fasta adapters.fasta --detect_adapter_for_pe \
+          -h /home/rania/GBS-carto/trimmed2/${sample}_trimming.html \
+          -j /home/rania/GBS-carto/trimmed2/${sample}_trimming.json -V
+    bwa mem -t 24 -R "@RG\tID:${sample}\tSM:${sample}" \
+            /home/rania/GBS-carto/Ref/Aesc.1_0.fa.gz \
+            /home/rania/GBS-carto/trimmed2/${sample}_trimmed_R1.fq.gz \
+            /home/rania/GBS-carto/trimmed2/${sample}_trimmed_R2.fq.gz |
+            samtools sort -n -O sam - | samtools fixmate -m -O bam - - |
+            samtools sort -O bam - | samtools view -h -b -f 3 - > \
+            /home/rania/GBS-carto/mapping2/${sample}.mapped.sorted.concordant.bam
+    bamtools index -in /home/rania/GBS-carto/mapping2/${sample}.mapped.sorted.concordant.bam
+done
+
+# calls variants with stacks
+mkdir stacks
+ref_map.pl --samples /home/rania/GBS-carto/mapping2/ --popmap ERS_GBS.txt -o stacks -X populations:"-p 1 -r 0.70 --fstats --write-random-snp --vcf"
+
+# appele des variant avec freebayes
+freebayes -f /home/rania/GBS-carto/Ref/Aesc.1_0.fa -L BAM.list --vcf result.vcf
+
+#genotyping error
+vcftools --vcf stacks3.vcf --maf 0.05 --out stacks3.random_snps.maf005 --recode --remove-filtered-all
+cd genotyping_error/
+split -l 2 genotyping_error.txt
+
+for i in x*; do vcftools --vcf stacks3.random_snps.maf005.recode.vcf --keep $i --out $i.random_snps.maf005 --recode --remove-filtered-all; done
+for i in x*.random_snps.maf005.recode.vcf; do vcftools --vcf $i --extract-FORMAT-info GT --out $i; done
+for i in x*.random_snps.maf005.recode.vcf.GT.FORMAT; do awk '{ if ($3 == $4) { print "same"; } else { print "different"; } }' $i > $i.diff; done
+mkdir maf005
+mv x*.random_snps.maf005* maf005/
+
+#fillters vcf (stacks)
+
+vcftools --vcf /home/rania/GBS-carto/filter.stacks3/stacks3.vcf --maf 0.05 --out /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005 --recode --remove-filtered-all
+
+vcftools --vcf /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005.recode.vcf --minGQ 20 --out /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005.GQ20 --recode --remove-filtered-all
+
+vcftools --vcf /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005.GQ20.recode.vcf --min-meanDP 10 --out /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005.GQ20.DP10 --recode --remove-filtered-all
+vcftools --vcf /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005.GQ20.DP10.recode.vcf --max-meanDP 500 --out /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005.GQ20.DP10-500 --recode --remove-filtered-all
+
+vcftools --vcf /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005.GQ20.recode.vcf --max-missing 0.70 --out /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005.GQ20.miss30 --recode --remove-filtered-all
+
+vcftools --vcf /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005.GQ20.DP10-500.recode.vcf --max-missing 0.70 --out /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005.GQ20.DP10-500.miss30 --recode --remove-filtered-all
+
+
+vcftools --vcf /home/rania/GBS-carto/filter.stacks3/stacks3.random_snps.maf005.GQ20.DP10-500.miss30.recode.vcf --missing-indv 
+vcftools --vcf stacks3.random_snps.maf005.GQ20.DP10-500.miss30.ri.recode.vcf --remove missing-ind2.txt --out stacks3.random_snps.maf005.GQ20.DP10-500.miss30.ri.missindv50 --recode --remove-filtered-all
+
+
+#remove_SNP
+bcftools view -T ^remove_snp_stacks.txt stacks3.random_snps.maf005.GQ20.DP10-500.miss30.ri.missindv50.recode.vcf > remove_SNP_stacks.vcf
+
+
+####calculate the median coverage (depth)
+bcftools query -f '[%DP\t]\n' stacks3.vcf > depth_values.txt
+tr '\t' '\n' < depth_values.txt | grep -v '\.' | sort -n | awk '
+{
+  arr[NR] = $1
+}
+END {
+  if (NR % 2) {
+    print "Median coverage (DP):", arr[(NR + 1) / 2]
+  } else {
+    print "Median coverage (DP):", (arr[(NR / 2)] + arr[(NR / 2) + 1]) / 2
+  }
+}'
+
+##call rate
+bcftools query -f '[%GT\t]\n' stacks3.vcf | tr '\t' '\n' | awk '
+{
+  total++
+  if ($1 != "./.") called++
+}
+END {
+  print "Call rate (%):", (called / total) * 100
+}'
+
+
